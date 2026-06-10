@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MODEL_NAME          = "gemini-1.5-pro"
+MODEL_NAME          = "gemini-2.0-flash"
 SUPPORTED_FRAMEWORKS = ("Streamlit", "React", "Flask")
 MAX_IMAGES          = 3
 MIN_IMAGES          = 1
