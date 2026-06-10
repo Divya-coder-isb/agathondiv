@@ -1,319 +1,277 @@
 """
-app.py
+code_generator.py
 
-Screen-to-Code Agent — Streamlit UI.
+Screen-to-Code AI Agent module powered by Google Gemini.
 
-Upload up to 3 mock screen images, choose a target framework
-(Streamlit / React / Flask), and Gemini Vision will generate
-production-ready UI code for you.
+Exposes two top-level functions:
+    - analyze_screens(images, api_key): plain-English breakdown of mock screens.
+    - generate_code(images, framework, api_key): complete, runnable UI code
+      in Streamlit, React, or Flask based on the supplied screens.
+
+Dependencies (see requirements.txt):
+    - google-genai
+    - Pillow
 """
 
-import io
-import time
+from __future__ import annotations
 
-import streamlit as st
+import logging
+from typing import List
+
+from google import genai
+from google.genai import types
 from PIL import Image
 
-try:
-    from code_generator import analyze_screens, generate_code
-    import_error = None
-except Exception as e:
-    import_error = str(e)
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Page configuration (must be the first Streamlit call)
+# Constants
 # ---------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Screen-to-Code Agent",
-    page_icon="🖥️",
-    layout="wide",
-)
-
-# Show import error immediately if code_generator failed to load
-if import_error:
-    st.error(f"❌ Failed to import code_generator: {import_error}")
-    st.stop()
+MODEL_NAME           = "gemini-2.0-flash"   # ✅ Updated from gemini-1.5-pro
+SUPPORTED_FRAMEWORKS = ("Streamlit", "React", "Flask")
+MAX_IMAGES           = 3
+MIN_IMAGES           = 1
 
 
 # ---------------------------------------------------------------------------
-# Custom CSS
+# Generation config
 # ---------------------------------------------------------------------------
-st.markdown(
-    """
-    <style>
-        .app-header {
-            background-color: #0A2342;
-            color: #FFFFFF;
-            padding: 1.75rem 2rem;
-            border-radius: 12px;
-            margin-bottom: 1.5rem;
-            box-shadow: 0 6px 18px rgba(10, 35, 66, 0.18);
-        }
-        .app-header h1 {
-            color: #FFFFFF !important;
-            margin: 0;
-            font-size: 2.2rem;
-            font-weight: 700;
-        }
-        .app-header p {
-            color: #D9E1F2;
-            margin: 0.5rem 0 0 0;
-            font-size: 1.05rem;
-            line-height: 1.5;
-        }
-
-        .stButton > button[kind="primary"] {
-            background-color: #1E6FEB;
-            border: none;
-            color: #FFFFFF;
-            font-size: 1.05rem;
-            font-weight: 600;
-            padding: 0.85rem 1.25rem;
-            border-radius: 10px;
-            transition: all 0.2s ease;
-            box-shadow: 0 4px 12px rgba(30, 111, 235, 0.25);
-        }
-        .stButton > button[kind="primary"]:hover:not(:disabled) {
-            background-color: #1558C2;
-            transform: translateY(-1px);
-            box-shadow: 0 6px 16px rgba(30, 111, 235, 0.35);
-        }
-        .stButton > button[kind="primary"]:disabled {
-            background-color: #B0B7C2;
-            color: #F1F2F4;
-            box-shadow: none;
-        }
-        [data-testid="stCode"] {
-            box-shadow: 0 6px 20px rgba(10, 35, 66, 0.12);
-            border-radius: 10px;
-            overflow: hidden;
-        }
-        [data-testid="stImage"] img {
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-        }
-    </style>
-    """,
-    unsafe_allow_html=True,
+_GENERATION_CONFIG = types.GenerateContentConfig(
+    temperature=0.4,
+    top_p=0.95,
+    max_output_tokens=8192,
 )
 
 
 # ---------------------------------------------------------------------------
-# Session-state defaults
+# System Prompts
 # ---------------------------------------------------------------------------
-def _init_state() -> None:
-    defaults = {
-        "generated_code": "",
-        "framework": "",
-        "analysis_text": "",
-    }
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
+ANALYSIS_SYSTEM_PROMPT = """You are an expert UI/UX analyst.
+You will be given between 1 and 3 mock screen images.
+
+For the uploaded screen(s), produce a clean, plain-English breakdown that covers:
+1. Overall layout of each screen (header, sidebar, main content, footer, grids, etc.).
+2. Every UI component visible — buttons, tables, forms, input fields, charts,
+   navbars, sidebars, cards, dropdowns, tabs, modals, icons, images, etc.
+3. The color scheme (primary, secondary, accent, background, text colors).
+4. Any visible text, labels, headings, placeholder text, or menu items.
+
+Rules:
+- Return ONLY a plain-English breakdown. No code. No markdown fences.
+- Be concise but complete. Use short bullet points grouped by screen.
+- If multiple screens are provided, label them as Screen 1, Screen 2, etc.
+"""
 
 
-_init_state()
-
-WIDGET_KEYS = ("api_key", "framework_choice", "screen1", "screen2", "screen3", "analyze_first")
-RESULT_KEYS = ("generated_code", "framework", "analysis_text")
-
-
-def _reset_all() -> None:
-    for key in WIDGET_KEYS + RESULT_KEYS:
-        if key in st.session_state:
-            del st.session_state[key]
-    st.rerun()
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-FRAMEWORK_DESCRIPTIONS = {
-    "Streamlit": "⚡ Python-based. Best for data apps & internal tools.",
-    "React":     "⚛️ JavaScript. Best for modern web applications.",
-    "Flask":     "🌶️ Python web framework with HTML templates.",
+FRAMEWORK_INSTRUCTIONS = {
+    "Streamlit": """Streamlit-specific requirements:
+- Produce a SINGLE file named app.py.
+- Put all required imports at the top of app.py.
+- Use st.sidebar for any sidebar / navigation.
+- Use st.columns for multi-column layouts.
+- Use st.dataframe for tables.
+- Use st.plotly_chart for charts.
+- The file must be runnable directly with: streamlit run app.py
+""",
+    "React": """React-specific requirements:
+- Produce App.js, one component file per major screen section, and App.css.
+- Use functional components and React hooks.
+- Keep imports/exports correct between files.
+- Clearly delimit each file with a header comment in this exact format:
+      // ===== File: src/App.js =====
+      // ===== File: src/components/<ComponentName>.js =====
+      /* ===== File: src/App.css ===== */
+- Assume a standard Create-React-App project layout.
+""",
+    "Flask": """Flask-specific requirements:
+- Produce app.py, templates/index.html, and static/style.css.
+- app.py must define the Flask app and at least one route rendering
+  index.html via render_template, passing placeholder data where useful.
+- Clearly delimit each file with a header comment in this exact format:
+      # ===== File: app.py =====
+      <!-- ===== File: templates/index.html ===== -->
+      /* ===== File: static/style.css ===== */
+- The app must be runnable with: python app.py
+""",
 }
 
-FRAMEWORK_DOWNLOAD_META = {
-    "Streamlit": {"filename": "app.py",  "mime": "text/plain", "language": "python"},
-    "React":     {"filename": "App.js",  "mime": "text/plain", "language": "javascript"},
-    "Flask":     {"filename": "app.py",  "mime": "text/plain", "language": "python"},
-}
 
+CODE_SYSTEM_PROMPT_TEMPLATE = """You are an expert front-end engineer.
+You will be given between 1 and 3 mock screen images and a target framework.
 
-def _uploaded_to_pil(uploaded_file) -> Image.Image:
-    """Convert a Streamlit uploaded file to a PIL RGB image."""
-    img = Image.open(io.BytesIO(uploaded_file.getvalue()))
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    return img
+Target framework: {framework}
+
+Your job:
+1. Carefully analyze the layout of every screen.
+2. Identify every UI component visible (buttons, tables, forms, charts,
+   navbars, sidebars, cards, dropdowns, tabs, etc.).
+3. Generate a COMPLETE, RUNNABLE application in the target framework that
+   visually reproduces the screens as closely as possible.
+4. Where real data is not visible in the mock, use sensible placeholder data
+   (sample rows for tables, dummy series for charts, lorem-ipsum text, etc.).
+5. Add clear comments for every major section of the code.
+
+{framework_instructions}
+
+Output rules (CRITICAL):
+- Return ONLY raw code. No prose, no explanations, no markdown code fences,
+  no leading or trailing commentary.
+- All explanations must live INSIDE code comments.
+- The code must be runnable as-is once placed in the documented file paths.
+"""
 
 
 # ---------------------------------------------------------------------------
-# Sidebar
+# Internal Helpers
 # ---------------------------------------------------------------------------
-with st.sidebar:
-    st.header("⚙️ Configuration")
 
-    # Safely read secret — works in both Streamlit Cloud and local/Colab
-    try:
-        default_key = st.secrets.get("GEMINI_API_KEY", "")
-    except Exception:
-        default_key = ""
-
-    # ✅ NEW — Hide input field if key is already loaded from secrets
-    if default_key:
-        api_key = default_key
-        st.success("🔐 API Key loaded securely")
-    else:
-        api_key = st.text_input(
-            "Gemini API Key",
-            value="",
-            type="password",
-            key="api_key",
-            help="Obtain your key at https://aistudio.google.com/app/apikey",
-            placeholder="Paste your Gemini API key here...",
+def _validate_images(images: List[Image.Image]) -> None:
+    """Raise ValueError if the images list is missing, empty, or out of bounds."""
+    if not isinstance(images, list) or len(images) < MIN_IMAGES:
+        raise ValueError(
+            f"`images` must be a non-empty list of PIL Image objects "
+            f"(minimum {MIN_IMAGES})."
         )
-        if not api_key:
-            st.caption("🔑 Enter your Gemini API key to get started.")
-
-    st.divider()
-
-    framework_choice = st.selectbox(
-        "🎨 Choose UI Framework",
-        options=["Select a framework...", "Streamlit", "React", "Flask"],
-        key="framework_choice",
-    )
-
-    if framework_choice in FRAMEWORK_DESCRIPTIONS:
-        st.caption(FRAMEWORK_DESCRIPTIONS[framework_choice])
-
-    st.divider()
-
-    st.header("📤 Upload Mock Screens")
-    screen1 = st.file_uploader("📱 Screen 1 (Required)", type=["png", "jpg", "jpeg"], key="screen1")
-    screen2 = st.file_uploader("📱 Screen 2 (Optional)", type=["png", "jpg", "jpeg"], key="screen2")
-    screen3 = st.file_uploader("📱 Screen 3 (Optional)", type=["png", "jpg", "jpeg"], key="screen3")
-
-    st.divider()
-
-    if st.button("🔄 Reset All", use_container_width=True):
-        _reset_all()
+    if len(images) > MAX_IMAGES:
+        raise ValueError(
+            f"At most {MAX_IMAGES} images are supported; "
+            f"you supplied {len(images)}."
+        )
+    for idx, img in enumerate(images):
+        if not isinstance(img, Image.Image):
+            raise ValueError(
+                f"Item at index {idx} is not a PIL Image object "
+                f"(got {type(img).__name__}). "
+                "Open your files with PIL.Image.open() before passing them in."
+            )
 
 
+def _build_client(api_key: str) -> genai.Client:
+    """Validate the API key and return a configured Gemini client."""
+    if not isinstance(api_key, str) or not api_key.strip():
+        raise ValueError(
+            "A non-empty Gemini API key string is required. "
+            "Obtain one at https://aistudio.google.com/app/apikey"
+        )
+    logger.info("Gemini client created successfully.")
+    return genai.Client(api_key=api_key.strip())
 
-uploaded_screens = [s for s in (screen1, screen2, screen3) if s is not None]
 
-is_screen1_uploaded   = screen1 is not None
-is_framework_selected = framework_choice in FRAMEWORK_DESCRIPTIONS
-is_api_key_provided   = bool(api_key and api_key.strip())
-is_code_generated     = bool(st.session_state.get("generated_code"))
+def _strip_outer_code_fence(text: str) -> str:
+    """Unwrap a single outer ```...``` fence if the entire response is wrapped."""
+    if not text:
+        return text
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return text
+    first_newline = stripped.find("\n")
+    if first_newline == -1:
+        return text
+    if not stripped.endswith("```"):
+        return text
+    inner = stripped[first_newline + 1: -3]
+    if "```" in inner:
+        return text
+    return inner.rstrip()
 
 
 # ---------------------------------------------------------------------------
-# Header banner
+# Public API
 # ---------------------------------------------------------------------------
-st.markdown(
+
+def analyze_screens(images: List[Image.Image], api_key: str) -> str:
     """
-    <div class="app-header">
-        <h1>🖥️ Screen-to-Code Agent</h1>
-        <p>Upload your mock screens, select a framework, and get production-ready UI code instantly</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+    Send 1-3 PIL images to Gemini and return a plain-English UI breakdown.
+    Always returns a str, even on error.
+    """
+    try:
+        _validate_images(images)
+        client = _build_client(api_key)
+
+        user_text = (
+            f"Analyze these {len(images)} mock screen image(s) and provide "
+            "the plain-English breakdown as instructed."
+        )
+
+        contents = [ANALYSIS_SYSTEM_PROMPT, user_text, *images]
+
+        logger.info("Sending %d image(s) to Gemini for analysis...", len(images))
+
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=contents,
+            config=_GENERATION_CONFIG,
+        )
+
+        result = (response.text or "").strip()
+
+        if not result:
+            return "[analyze_screens] Gemini returned an empty response. Please retry."
+
+        return result
+
+    except Exception as exc:
+        logger.error("analyze_screens failed: %s: %s", type(exc).__name__, exc)
+        return f"[analyze_screens error] {type(exc).__name__}: {exc}"
 
 
-# ---------------------------------------------------------------------------
-# Progress tiles
-# ---------------------------------------------------------------------------
-status_cols = st.columns(4)
-with status_cols[0]: st.metric("Screens",   "✅" if is_screen1_uploaded   else "⏳")
-with status_cols[1]: st.metric("Framework", "✅" if is_framework_selected  else "⏳")
-with status_cols[2]: st.metric("API Key",   "✅" if is_api_key_provided    else "⏳")
-with status_cols[3]: st.metric("Code",      "✅" if is_code_generated      else "⏳")
+def generate_code(
+    images: List[Image.Image],
+    framework: str,
+    api_key: str,
+) -> str:
+    """
+    Send 1-3 PIL images + framework choice to Gemini and return raw UI code.
+    Always returns a str, even on error.
+    """
+    try:
+        _validate_images(images)
 
+        if framework not in SUPPORTED_FRAMEWORKS:
+            raise ValueError(
+                f"Unsupported framework '{framework}'. "
+                f"Choose one of: {list(SUPPORTED_FRAMEWORKS)}."
+            )
 
-# ---------------------------------------------------------------------------
-# Empty-state hint
-# ---------------------------------------------------------------------------
-if not uploaded_screens:
-    st.info("👆 Upload at least one mock screen and select a framework from the sidebar to get started.")
+        client = _build_client(api_key)
 
+        system_prompt = CODE_SYSTEM_PROMPT_TEMPLATE.format(
+            framework=framework,
+            framework_instructions=FRAMEWORK_INSTRUCTIONS[framework],
+        )
 
-# ---------------------------------------------------------------------------
-# Screen preview
-# ---------------------------------------------------------------------------
-if uploaded_screens:
-    st.subheader("🖼️ Uploaded Screens")
-    preview_cols = st.columns(len(uploaded_screens))
-    for col, screen in zip(preview_cols, uploaded_screens):
-        with col:
-            st.image(screen, use_container_width=True)
-            st.caption(screen.name)
+        user_text = (
+            f"Generate a complete, runnable {framework} app that reproduces "
+            f"these {len(images)} mock screen(s). Return ONLY raw code."
+        )
 
-analyze_first = st.checkbox("🔍 Analyze screens before generating code", key="analyze_first")
+        contents = [system_prompt, user_text, *images]
 
+        logger.info(
+            "Sending %d image(s) to Gemini for %s code generation...",
+            len(images),
+            framework,
+        )
 
-# ---------------------------------------------------------------------------
-# Generate button
-# ---------------------------------------------------------------------------
-generate_disabled = not (is_screen1_uploaded and is_framework_selected and is_api_key_provided)
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=contents,
+            config=_GENERATION_CONFIG,
+        )
 
-generate_clicked = st.button(
-    "🚀 Generate Code",
-    type="primary",
-    disabled=generate_disabled,
-    use_container_width=True,
-)
+        result = (response.text or "").strip()
 
-if generate_clicked:
-    pil_images = [_uploaded_to_pil(s) for s in uploaded_screens]
+        if not result:
+            return "[generate_code] Gemini returned an empty response. Please retry."
 
-    if analyze_first:
-        with st.spinner("🔍 Analyzing your screens..."):
-            analysis_text = analyze_screens(pil_images, api_key)
-            st.session_state["analysis_text"] = analysis_text
-            time.sleep(0.2)
-        with st.expander("🔍 Screen Analysis", expanded=True):
-            st.write(st.session_state["analysis_text"])
-    else:
-        st.session_state["analysis_text"] = ""
+        return _strip_outer_code_fence(result)
 
-    with st.spinner(f"⚙️ Generating {framework_choice} code..."):
-        generated = generate_code(pil_images, framework_choice, api_key)
-        st.session_state["generated_code"] = generated
-        st.session_state["framework"] = framework_choice
-
-
-# ---------------------------------------------------------------------------
-# Output section
-# ---------------------------------------------------------------------------
-if st.session_state.get("generated_code") and st.session_state.get("framework"):
-    fw        = st.session_state["framework"]
-    code_text = st.session_state["generated_code"]
-    meta      = FRAMEWORK_DOWNLOAD_META[fw]
-
-    if st.session_state.get("analysis_text") and not generate_clicked:
-        with st.expander("🔍 Screen Analysis", expanded=False):
-            st.write(st.session_state["analysis_text"])
-
-    st.success(f"✅ Code generated for {fw}! Copy from below or download the file.")
-    st.code(code_text, language=meta["language"])
-    st.caption("💡 Click the copy icon at the top right of the code block to copy all code")
-
-    st.download_button(
-        label="⬇️ Download Code",
-        data=code_text,
-        file_name=meta["filename"],
-        mime=meta["mime"],
-        use_container_width=True,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Footer
-# ---------------------------------------------------------------------------
-st.markdown("---")
-st.markdown("Powered by Gemini Vision | Built for Ford Agathon 🚗")
+    except Exception as exc:
+        logger.error("generate_code failed: %s: %s", type(exc).__name__, exc)
+        return f"[generate_code error] {type(exc).__name__}: {exc}"
