@@ -1,32 +1,11 @@
 # Screen-to-Code Agent - Python dependencies
 # Install with: pip install -r requirements.txt
-# Tested on Python 3.12
 
 # Streamlit UI
 streamlit==1.36.0
 
 # Google Gemini Vision SDK
-# >= 0.5.0 required for system_instruction= param in GenerativeModel()
 google-generativeai==0.7.2
 
-# Image handling - 10.4.0 has Python 3.12 wheels, no source compile needed
-Pillow==10.4.0
-
-# Google API transitive dependencies
-google-ai-generativelanguage==0.6.6
-google-api-core==2.19.1
-google-auth==2.32.0
-googleapis-common-protos==1.63.2
-
-# Protobuf - must stay on 4.x
-# google-ai-generativelanguage==0.6.6 requires protobuf < 5.0.0
-protobuf==4.25.3
-
-# gRPC - must stay on 1.62.x
-# grpcio-status 1.64.x requires protobuf >= 5.26.1 which conflicts above
-grpcio==1.62.2
-grpcio-status==1.62.2
-
-# Utilities
-requests==2.32.3
-tqdm==4.66.4
+# Image handling - unpinned so pip picks a wheel compatible with Python 3.14
+Pillow>=10.4.0
