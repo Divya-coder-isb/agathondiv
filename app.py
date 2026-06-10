@@ -7,7 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/19EWPXJnzEVZ4_KIyNxJJ9FQ7oXqUUPJ4
 """
 
-!pip install streamlit==1.36.0 google-generativeai==0.7.2 Pillow==10.4.0
 
 # Commented out IPython magic to ensure Python compatibility.
 # %%writefile code_generator.py
