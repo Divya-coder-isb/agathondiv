@@ -162,13 +162,21 @@ with st.sidebar:
     except Exception:
         default_key = ""
 
-    api_key = st.text_input(
-        "Gemini API Key",
-        value=default_key,
-        type="password",
-        key="api_key",
-        help="Pre-filled from Streamlit secrets or paste your key here.",
-    )
+    # ✅ NEW — Hide input field if key is already loaded from secrets
+    if default_key:
+        api_key = default_key
+        st.success("🔐 API Key loaded securely")
+    else:
+        api_key = st.text_input(
+            "Gemini API Key",
+            value="",
+            type="password",
+            key="api_key",
+            help="Obtain your key at https://aistudio.google.com/app/apikey",
+            placeholder="Paste your Gemini API key here...",
+        )
+        if not api_key:
+            st.caption("🔑 Enter your Gemini API key to get started.")
 
     st.divider()
 
@@ -192,6 +200,7 @@ with st.sidebar:
 
     if st.button("🔄 Reset All", use_container_width=True):
         _reset_all()
+
 
 
 uploaded_screens = [s for s in (screen1, screen2, screen3) if s is not None]
