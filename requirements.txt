@@ -1,6 +1,6 @@
 # Screen-to-Code Agent - Python dependencies
 # Install with: pip install -r requirements.txt
-# Python 3.12 compatible
+# Tested on Python 3.12
 
 # Streamlit UI
 streamlit==1.36.0
@@ -9,7 +9,7 @@ streamlit==1.36.0
 # >= 0.5.0 required for system_instruction= param in GenerativeModel()
 google-generativeai==0.7.2
 
-# Image handling for PIL.Image objects passed to Gemini
+# Image handling - 10.4.0 has Python 3.12 wheels, no source compile needed
 Pillow==10.4.0
 
 # Google API transitive dependencies
